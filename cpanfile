@@ -1,5 +1,5 @@
 # Should also be available as Debian packages
-requires 'CGI';
+requires 'CGI', '>= 4.43, < 5.0';
 requires 'Tie::IxHash';
 requires 'LWP::Authen::Digest'; # libwww-perl
 requires 'LWP::Simple'; # libwww-perl
@@ -30,7 +30,7 @@ requires 'URI::Escape::XS';
 requires 'Encode::Punycode';
 requires 'GraphViz2';
 requires 'Algorithm::CheckDigits';
-requires 'Geo::IP';
+requires 'GeoIP2', '>= 2.006001, < 3.0';
 requires 'Image::OCR::Tesseract';
 requires 'DateTime', '>= 1.50';
 requires 'DateTime::Locale', '>= 1.22';

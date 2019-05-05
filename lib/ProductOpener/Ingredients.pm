@@ -143,6 +143,7 @@ sub compute_carbon_footprint_from_ingredients($) {
 		delete $product_ref->{nutriments}{"carbon-footprint-from-meat-or-fish"};
 		delete $product_ref->{nutriments}{"carbon-footprint-from-meat-or-fish_100g"};
 		delete $product_ref->{nutriments}{"carbon-footprint-from-meat-or-fish_serving"};
+		delete $product_ref->{nutriments}{"carbon-footprint-from-meat-or-fish_product"};
 	}
 	
 	delete $product_ref->{"carbon_footprint_from_meat_or_fish_debug"};
@@ -332,6 +333,9 @@ sub extract_ingredients_from_image($$$) {
 			my $json_file = "$www_root/images/products/$path/$filename.full.jpg" . ".google_cloud_vision.json";
 			
 			$log->info("saving google cloud vision json response to file", { path => $json_file }) if $log->is_info();
+			
+			# UTF-8 issue , see https://stackoverflow.com/questions/4572007/perl-lwpuseragent-mishandling-utf-8-response
+			$json_response = decode("utf8", $json_response);
 			
 			open (my $OUT, ">:encoding(UTF-8)", $json_file);
 			print $OUT $json_response;

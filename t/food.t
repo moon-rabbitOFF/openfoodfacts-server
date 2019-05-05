@@ -70,6 +70,7 @@ is( g_to_unit(42000, "\N{U+516C}\N{U+5347}"), 42 );
 my $product_ref = {
 	lc => "en",
 	categories_tags => ["en:beverages"],
+	categories => "beverages",
 	ingredients_tags => ["en:water", "en:fruit-juice"],
 };
 
@@ -79,11 +80,12 @@ special_process_product($product_ref);
 
 ok( (not has_tag($product_ref, 'categories', 'en:unsweetened-beverages')), 'should not add en:unsweetened-beverages' ) || diag explain $product_ref;
 
-is( $product_ref->{pnns_groups_2}, undef) || diag explain $product_ref;
+is( $product_ref->{pnns_groups_2}, "unknown") || diag explain $product_ref;
 
 $product_ref = {
         lc => "en",
         categories_tags => ["en:beverages"],
+	categories => "beverages",
         ingredients_tags => ["en:water", "en:fruit-juice"],
 	ingredients_text => "water, fruit juice",
 };
@@ -100,6 +102,7 @@ is( $product_ref->{pnns_groups_2}, "Unsweetened beverages") || diag explain $pro
 $product_ref = {
         lc => "en",
         categories_tags => ["en:beverages"],
+	categories => "beverages",
         ingredients_tags => ["en:sugar"],
 };
 
@@ -113,6 +116,7 @@ is( $product_ref->{pnns_groups_2}, "Sweetened beverages") || diag explain $produ
 $product_ref = {
         lc => "en",
         categories_tags => ["en:beverages"],
+	categories => "beverages",
         ingredients_tags => ["en:sugar"],
 	additives_tags => ["en:e950"],
 	with_sweeteners => 1,
@@ -129,6 +133,7 @@ is( $product_ref->{pnns_groups_2}, "Artificially sweetened beverages") || diag e
 $product_ref = {
         lc => "en",
         categories_tags => ["en:beverages", "en:waters", "en:flavored-waters"],
+	categories => "beverages",
         ingredients_tags => ["en:sugar"],
         additives_tags => ["en:e950"],
         with_sweeteners => 1,
@@ -144,6 +149,7 @@ is( $product_ref->{pnns_groups_2}, "Artificially sweetened beverages") || diag e
 
 $product_ref = {
         lc => "en",
+	categories => "beverages",
         categories_tags => ["en:beverages", "en:waters", "en:flavored-waters"],
 };
 
@@ -155,6 +161,7 @@ is( $product_ref->{pnns_groups_2}, "Waters and flavored waters") || diag explain
 
 $product_ref = {
         lc => "en",
+	categories => "beverages",
         categories_tags => ["en:beverages", "en:iced-teas"],
 };
 
@@ -166,6 +173,7 @@ is( $product_ref->{pnns_groups_2}, "Teas and herbal teas and coffees") || diag e
 
 $product_ref = {
         lc => "en",
+	categories => "beverages",
         categories_tags => ["en:beverages", "en:ice-teas"],
         ingredients_tags => ["en:sugar"],
         additives_tags => ["en:e950"],
@@ -183,6 +191,7 @@ is( $product_ref->{pnns_groups_2}, "Artificially sweetened beverages") || diag e
 
 $product_ref = {
         lc => "en",
+	categories => "beverages",
         categories_tags => ["en:beverages"],
         ingredients_tags => ["en:water", "en:fruit-juice"],
         ingredients_text => "water, fruit juice",
@@ -200,6 +209,7 @@ ok( (has_tag($product_ref, 'categories', 'en:artificially-sweetened-beverages'))
 
 $product_ref = {
         lc => "en",
+	categories => "beverages",
         categories_tags => ["en:beverages", "en:unsweetened-beverages"],
         ingredients_tags => ["en:water", "en:sugar"],
         ingredients_text => "water, fruit juice",
@@ -216,6 +226,7 @@ is($product_ref->{nutrition_score_beverage}, 1);
 
 $product_ref = {
         lc => "en",
+	categories => "beverages",
         categories_tags => ["en:beverages", "en:plant-milks"],
         ingredients_tags => ["en:water", "en:sugar"],
         ingredients_text => "water, fruit juice",
@@ -224,5 +235,32 @@ $product_ref = {
 special_process_product($product_ref);
 
 is($product_ref->{nutrition_score_beverage}, 0);
+
+# normalize_fr_ce_code
+is (normalize_packager_codes("france 69.238.010 ec"), "FR 69.238.010 EC", "FR: normalized code correctly");
+is (normalize_packager_codes(normalize_packager_codes("france 69.238.010 ec")), "FR 69.238.010 EC", "FR: normalizing code twice does not change it any more than normalizing once");
+
+# normalize_uk_ce_code
+is (normalize_packager_codes("uk dz7131 eg"), "UK DZ7131 EC", "UK: normalized code correctly");
+is (normalize_packager_codes(normalize_packager_codes("uk dz7131 eg")), "UK DZ7131 EC", "UK: normalizing code twice does not change it any more than normalizing once");
+
+# normalize_es_ce_code
+is (normalize_packager_codes("NO-RGSEAA-21-21552-SE"), "ES 21.21552/SE EC", "ES: normalized NO-code correctly");
+is (normalize_packager_codes("ES 26.06854/T EC"), "ES 26.06854/T EC", "ES I: normalized code correctly");
+is (normalize_packager_codes("ES 26.06854/T C EC"), "ES 26.06854/T C EC", "ES II: normalized code correctly");
+is (normalize_packager_codes(normalize_packager_codes("ES 26.06854/T EC")), "ES 26.06854/T EC", "ES I: normalizing code twice does not change it any more than normalizing once");
+is (normalize_packager_codes(normalize_packager_codes("ES 26.06854/T C EC")), "ES 26.06854/T C EC", "ES II: normalizing code twice does not change it any more than normalizing once");
+
+# normalize_lu_ce_code - currently does not work as commented
+# is (normalize_packager_codes("LU L-2"), "LU L2", "LU: normalized code correctly");
+# is (normalize_packager_codes(normalize_packager_codes("LU L-2")), "LU L2", "LU: normalizing code twice does not change it any more than normalizing once");
+
+# normalize_rs_ce_code
+is (normalize_packager_codes("RS 731"), "RS 731 EC", "RS: normalized code correctly");
+is (normalize_packager_codes(normalize_packager_codes("RS 731")), "RS 731 EC", "RS: normalizing code twice does not change it any more than normalizing once");
+
+# normalize_ce_code
+is (normalize_packager_codes("de by-718 ec"), "DE BY-718 EC", "DE: normalized code correctly");
+is (normalize_packager_codes(normalize_packager_codes("de by-718 ec")), "DE BY-718 EC", "DE: normalizing code twice does not change it any more than normalizing once");
 
 done_testing();

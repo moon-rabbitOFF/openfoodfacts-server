@@ -1,7 +1,7 @@
 ﻿# This file is part of Product Opener.
 #
 # Product Opener
-# Copyright (C) 2011-2018 Association Open Food Facts
+# Copyright (C) 2011-2019 Association Open Food Facts
 # Contact: contact@openfoodfacts.org
 # Address: 21 rue des Iles, 94100 Saint-Maur des Fossés, France
 #
@@ -80,7 +80,7 @@ BEGIN
 					$subdomain
 					$formatted_subdomain
 					$test
-					$lc
+					@lcs
 					$cc
 					$country
 
@@ -193,6 +193,7 @@ sub init()
 
 	$cc = 'world';
 	$lc = 'en';
+	@lcs = ();
 	$country = 'en:world';
 
 	if (not defined $r) {
@@ -315,11 +316,18 @@ sub init()
 		$cc_lc_overrides = 1;
 		$log->debug("cc override from request parameter", { cc => $cc }) if $log->is_debug();
 	}
-	if ((defined param('lc')) and (defined $language_codes{param('lc')})) {
-		$lc = param('lc');
-		$lang = $lc;
-		$cc_lc_overrides = 1;
-		$log->debug("lc override from request parameter", { lc => $lc }) if $log->is_debug();
+	if (defined param('lc')) {
+		# allow multiple languages in an ordered list
+		@lcs = split(/,/, param('lc'));
+		if (defined $language_codes{$lcs[0]}) {
+			$lc = $lcs[0];
+			$lang = $lc;
+			$cc_lc_overrides = 1;
+			$log->debug("lc override from request parameter", { lc => $lc , lcs => \@lcs}) if $log->is_debug();
+		}
+		else {
+			@lcs = ();
+		}
 	}
 	# change the subdomain if we have overrides so that links to product pages are properly constructed
 	if ($cc_lc_overrides) {
@@ -369,7 +377,7 @@ CSS
 CSS
 ;
 	}
-	
+
 	# call format_subdomain($subdomain) only once
 	$formatted_subdomain = format_subdomain($subdomain);
 }
@@ -424,7 +432,7 @@ sub analyze_request($)
 
 	# first check parameters in the query string
 
-	foreach my $parameter ('fields', 'rev', 'json', 'jsonp', 'jqm','xml', 'nocache') {
+	foreach my $parameter ('fields', 'rev', 'json', 'jsonp', 'jqm','xml', 'nocache', 'translate') {
 
 		if ($request_ref->{query_string} =~ /(\&|\?)$parameter=([^\&]+)/) {
 			$request_ref->{query_string} =~ s/(\&|\?)$parameter=([^\&]+)//;
@@ -1133,12 +1141,12 @@ sub display_mission($)
 
 
 
-
-sub display_list_of_tags($$) {
+sub query_list_of_tags($$) {
 
 
 	my $request_ref = shift;
 	my $query_ref = shift;
+
 	my $groupby_tagtype = $request_ref->{groupby_tagtype};
 
 	# Add a meta robot noindex for pages related to users
@@ -1167,7 +1175,6 @@ sub display_list_of_tags($$) {
 		$log->debug("MongoDB query built", { query => $query_ref }) if $log->is_debug();
 	}
 
-	my $worlddom = format_subdomain('world');
 	my $staticdom = format_subdomain('static');
 
 
@@ -1201,7 +1208,6 @@ sub display_list_of_tags($$) {
 	# groupby_tagtype
 
 	my $results;
-	my $count;
 
 	my $aggregate_parameters = [
 			{ "\$match" => $query_ref },
@@ -1260,17 +1266,17 @@ sub display_list_of_tags($$) {
 		# or if the user is logged in and nocache is different from 0
 		if ( ((defined $request_ref->{nocache}) and ($request_ref->{nocache}))
 			or ((defined $User_id) and not ((defined $request_ref->{nocache}) and ($request_ref->{nocache} == 0)))   ) {
-			
+
 			eval {
 				$log->debug("Executing MongoDB aggregate query on products collection", { query => $aggregate_parameters }) if $log->is_debug();
 				$results = execute_query(sub {
 					return get_products_collection()->aggregate( $aggregate_parameters, { allowDiskUse => 1 } );
 				});
-			};			
-			
+			};
+
 		}
 		else {
-		
+
 			eval {
 				$log->debug("Executing MongoDB aggregate query on products_tags collection", { query => $aggregate_parameters }) if $log->is_debug();
 				$results = execute_query(sub {
@@ -1280,10 +1286,9 @@ sub display_list_of_tags($$) {
 		}
 		if ($@) {
 			$log->warn("MongoDB error", { error => $@ }) if $log->is_warn();
-			$count = -1;
 		}
 		else {
-			$log->info("MongoDB query ok", { error => $@, result_count => $count }) if $log->is_info();
+			$log->info("MongoDB query ok", { error => $@ }) if $log->is_info();
 		}
 
 		$log->debug("MongoDB query done", { error => $@ }) if $log->is_debug();
@@ -1315,6 +1320,18 @@ sub display_list_of_tags($$) {
 		$log->debug("Found a value for aggregate MongoDB query key", { key => $key }) if $log->is_debug();
 	}
 
+	return $results;
+}
+
+
+
+sub display_list_of_tags($$) {
+
+
+	my $request_ref = shift;
+	my $query_ref = shift;
+
+	my $results = query_list_of_tags($request_ref, $query_ref);
 
 	my $html = '';
 	my $html_pages = '';
@@ -1335,6 +1352,7 @@ sub display_list_of_tags($$) {
 		if ((defined $request_ref->{current_link_query}) and (not defined $request_ref->{jqm})) {
 
 			if ($country ne 'en:world') {
+				my $worlddom = format_subdomain('world');
 				$html .= "<p>&rarr; <a href=\"${worlddom}" . $request_ref->{current_link_query} . "&action=display\">" . lang('view_results_from_the_entire_world') . "</a></p>";
 			}
 
@@ -1353,7 +1371,7 @@ sub display_list_of_tags($$) {
 		}
 
 		my @tags = @{$results};
-		my $tagtype = $groupby_tagtype;
+		my $tagtype = $request_ref->{groupby_tagtype};
 
 		$request_ref->{structured_response}{count} = ($#tags + 1);
 
@@ -1423,19 +1441,21 @@ sub display_list_of_tags($$) {
 		}
 
 		my %products = ();	# number of products by tag, used for histogram of nutrition grades colors
-		
+
 		$log->debug("going through all tags", {}) if $log->is_debug();
-		
+
 		my $i = 0;
+		
+		my $path = $tag_type_singular{$tagtype}{$lc};
 
 		foreach my $tagcount_ref (@tags) {
-	
+
 			$i++;
-			
+
 			if (($i % 10000 == 0) and ($log->is_debug())) {
 				$log->debug("going through all tags", {i => $i});
 			}
-		
+
 			my $tagid = $tagcount_ref->{_id};
 			my $count = $tagcount_ref->{count};
 
@@ -1485,17 +1505,25 @@ sub display_list_of_tags($$) {
 					$td_nutriments .= "<td style=\"text-align:center\">*</td>";
 				}
 			}
-
+			
+			my $info = '';
+			my $css_class = '';
+			
+			# For taxonomy tags
+			my $tag_ref; 
 
 			if (defined $taxonomy_fields{$tagtype}) {
-				$link = canonicalize_taxonomy_tag_link($lc, $tagtype, $tagid);
+				$tag_ref = get_taxonomy_tag_and_link_for_lang($lc, $tagtype, $tagid);
+				$link = "/$path/" . $tag_ref->{tagurl};
+				$css_class = $tag_ref->{css_class};
 			}
 			else {
 				$link = canonicalize_tag_link($tagtype, $tagid);
+				
+				if (not (($tagtype eq 'photographers') or ($tagtype eq 'editors') or ($tagtype eq 'informers') or ($tagtype eq 'correctors') or ($tagtype eq 'checkers'))) {
+					$css_class = "tag";	# not sure if it's needed
+				}
 			}
-
-			my $info = '';
-			my $cssclass = get_tag_css_class($lc, $tagtype, $tagid);
 
 			my $extra_td = '';
 
@@ -1508,7 +1536,7 @@ sub display_list_of_tags($$) {
 				$risk_level = $tags_levels{$lc}{$tagtype}{$icid} || $tags_levels{'fr'}{$tagtype}{$icid};
 
 				if ($risk_level) {
-					# $cssclass .= ' additives_' . $ingredients_classes{$tagtype}{$icid}{level} . ';
+					# $css_class .= ' additives_' . $ingredients_classes{$tagtype}{$icid}{level} . ';
 					# $info .= ' title="' . $ingredients_classes{$tagtype}{$icid}{warning} . '" ';
 					my $risk_level_label = lang("risk_level_" . $risk_level);
 					$risk_level_label =~ s/ /\&nbsp;/g;
@@ -1521,7 +1549,7 @@ sub display_list_of_tags($$) {
 			}
 
 			if ($risk_level) {
-				$cssclass .= ' level_' . $risk_level;
+				$css_class .= ' level_' . $risk_level;
 			}
 
 			my $product_link = $main_link . $link;
@@ -1549,7 +1577,7 @@ sub display_list_of_tags($$) {
 				}
 			}
 			elsif (defined $taxonomy_fields{$tagtype}) {
-				$display = display_taxonomy_tag($lc, $tagtype, $tagid);
+				$display = $tag_ref->{display};
 				if ((defined $properties{$tagtype}) and (defined $properties{$tagtype}{$tagid})) {
 					foreach my $key (keys %weblink_templates) {
 						next if not defined $properties{$tagtype}{$tagid}{$key};
@@ -1561,8 +1589,8 @@ sub display_list_of_tags($$) {
 				$display = canonicalize_tag2($tagtype, $tagid);
 			}
 
-			$cssclass =~ s/^\s+|\s+$//g;
-			$info .= ' class="' . $cssclass . '"';
+			$css_class =~ s/^\s+|\s+$//g;
+			$info .= ' class="' . $css_class . '"';
 			$html .= "<a href=\"$product_link\"$info$nofollow>" . $display . "</a>";
 			$html .= "</td>\n<td style=\"text-align:right\">$products</td>" . $td_nutriments . $extra_td . "</tr>\n";
 
@@ -1579,7 +1607,7 @@ sub display_list_of_tags($$) {
 
 			if (defined $tags_images{$lc}{$tagtype}{get_fileid($icid)}) {
 				my $img = $tags_images{$lc}{$tagtype}{get_fileid($icid)};
-				$tagentry->{image} = "$staticdom/images/lang/$lc/$tagtype/$img";
+				$tagentry->{image} = format_subdomain('static') . "/images/lang/$lc/$tagtype/$img";
 			}
 
 			push @{$request_ref->{structured_response}{tags}}, $tagentry;
@@ -1620,18 +1648,16 @@ sub display_list_of_tags($$) {
 					}
 				}
 			}
-
-
 		}
 
 		$html .= "</tbody></table></div>";
 
 		$log->debug("going through all tags - done", {}) if $log->is_debug();
-		
+
 
 		# nutrition grades colors histogram
 
-		if ($groupby_tagtype eq 'nutrition_grades') {
+		if ($request_ref->{groupby_tagtype} eq 'nutrition_grades') {
 
 		my $categories = "'A','B','C','D','E','" . lang("unknown") . "'";
 		my $series_data = '';
@@ -1821,12 +1847,326 @@ HEADER
 
 	# datatables clears both
 	$request_ref->{full_width} = 1;
+
+	$log->debug("end", {}) if $log->is_debug();
+
+
+	return $html;
+}
+
+
+
+
+
+
+sub display_list_of_tags_translate($$) {
+
+
+	my $request_ref = shift;
+	my $query_ref = shift;
+
+	my $results = query_list_of_tags($request_ref, $query_ref);
+
+	my $html = '';
+	my $html_pages = '';
+
+	if ((not defined $results) or (ref($results) ne "ARRAY") or (not defined $results->[0])) {
+
+		$log->debug("results for aggregate MongoDB query key", { "results" => $results}) if $log->is_debug();
+		$html .= "<p>" . lang("no_products") . "</p>";
+		$request_ref->{structured_response}{count} = 0;
+
+	}
+	else {
+
+		if ((defined $request_ref->{current_link_query}) and (not defined $request_ref->{jqm})) {
+
+			if ($country ne 'en:world') {
+				my $worlddom = format_subdomain('world');
+				$html .= "<p>&rarr; <a href=\"${worlddom}" . $request_ref->{current_link_query} . "&action=display\">" . lang('view_results_from_the_entire_world') . "</a></p>";
+			}
+
+			$request_ref->{current_link_query_display} = $request_ref->{current_link_query};
+			$html .= "&rarr; <a href=\"$request_ref->{current_link_query_display}&action=display\">" . lang("search_link") . "</a><br>";
+			$request_ref->{current_link_query_display} =~ s/\?action=process/\?action=display/;
+			$html .= "&rarr; <a href=\"$request_ref->{current_link_query_display}&action=display\">" . lang("search_edit") . "</a><br>";
+
+
+
+			if ((defined $request_ref->{current_link_query}) and (not defined $request_ref->{jqm}))  {
+				$request_ref->{current_link_query_download} = $request_ref->{current_link_query};
+				$request_ref->{current_link_query_download} .= "&download=on";
+				$html .= "&rarr; <a href=\"$request_ref->{current_link_query_download}\">" . lang("search_download_results") . "</a><br>";
+			}
+		}
+
+		my @tags = @{$results};
+		my $tagtype = $request_ref->{groupby_tagtype};
+
+		$request_ref->{structured_response}{count} = ($#tags + 1);
+
+		$request_ref->{title} = sprintf(lang("list_of_x"), $Lang{$tagtype . "_p"}{$lang});
+
+		# $html .= "<h3>" . sprintf(lang("translate_taxonomy_to"), $Lang{$tagtype . "_p"}{$lang}, $Languages{$lc}{$lc}) . "</h3>";
+		# Display the message in English until we have translated the translate_taxonomy_to message in many languages,
+		# to avoid mixing local words with English words
+		$html .= "<h3>" . sprintf($Lang{"translate_taxonomy_to"}{en}, $Lang{$tagtype . "_p"}{en}, $Languages{$lc}{en}) . "</h3>";
+		
+		$html .= "<p>" . lang("translate_taxonomy_description") . "</p>";
+		
+		$html .= '<p id="counts"><COUNTS></p>';
+
+
+		$html .= "<div style=\"max-width:600px;\"><table id=\"tagstable\">\n<thead><tr><th>" . ucfirst($Lang{$tagtype . "_s"}{$lang})
+		. "</th><th>" . $Lang{save}{$lang} . "</th><th>" . ucfirst($Lang{"products"}{$lang}) . "</th>" . "</tr></thead>\n<tbody>\n";
+
+#var availableTags = [
+#      "ActionScript",
+#      "Scala",
+#      "Scheme"
+#    ];
+
+		my $main_link = '';
+		my $nofollow = '';
+		if (defined $request_ref->{tagid}) {
+			local $log->context->{tagtype} = $request_ref->{tagtype};
+			local $log->context->{tagid} = $request_ref->{tagid};
+
+			$log->trace("determining main_link for the tag") if $log->is_trace();
+			if (defined $taxonomy_fields{$request_ref->{tagtype}}) {
+				$main_link = canonicalize_taxonomy_tag_link($lc,$request_ref->{tagtype},$request_ref->{tagid}) ;
+				$log->debug("main_link determined from the taxonomy tag", { main_link => $main_link }) if $log->is_debug();
+			}
+			else {
+				$main_link = canonicalize_tag_link($request_ref->{tagtype}, $request_ref->{tagid});
+				$log->debug("main_link determined from the canonical tag", { main_link => $main_link }) if $log->is_debug();
+			}
+			$nofollow = ' rel="nofollow"';
+		}
+		
+		my $users_translations_ref = {};
+
+		load_users_translations_for_lc($users_translations_ref, $tagtype, $lc);
+		
+		use Data::Dumper;
+		print STDERR Dumper($users_translations_ref);
+		
+		my %products = ();	# number of products by tag, used for histogram of nutrition grades colors
+		
+		$log->debug("going through all tags") if $log->is_debug();
+		
+		my $i = 0;	# Number of tags
+		my $j = 0;	# Number of tags displayed
+		
+		my $to_be_translated = 0;
+		my $translated = 0;
+		
+		my $path = $tag_type_singular{$tagtype}{$lc};
+
+		foreach my $tagcount_ref (@tags) {
+	
+			$i++;
+			
+			if (($i % 10000 == 0) and ($log->is_debug())) {
+				$log->debug("going through all tags", {i => $i});
+			}
+		
+			my $tagid = $tagcount_ref->{_id};
+			my $count = $tagcount_ref->{count};
+
+			$products{$tagid} = $count;
+
+			my $link;
+			my $products = $count;
+			if ($products == 0) {
+				$products = "";
+			}
+
+			
+			my $info = '';
+			my $css_class = '';
+			
+
+			my $tag_ref = get_taxonomy_tag_and_link_for_lang($lc, $tagtype, $tagid);
+			
+			# Keep only known tags that do not have a translation in the current lc
+			if ((not $request_ref->{translate} eq "all") and
+				((defined $tag_ref->{display_lc}) and (($tag_ref->{display_lc} eq $lc) or ($tag_ref->{display_lc} ne "en")))) {
+				next;
+			}
+			if (not $tag_ref->{known}) {
+				next;
+			}
+			
+			my $new_translation = "";
+			
+			# Check to see if we already have a user translation
+			if (defined $users_translations_ref->{$lc}{$tagid}) {
+				
+				$translated++;
+				
+				$log->debug("display_list_of_tags_translate - entry $tagid has existing user translation to $lc", $users_translations_ref->{$lc}{$tagid}) if $log->is_debug();
+			
+				if ($request_ref->{translate} eq "add") {
+					# Add mode: show only entries without translations
+					$log->debug("display_list_of_tags_translate - translate=" . $request_ref->{translate} . " - skip $tagid entry with existing user translation") if $log->is_debug();
+					next;
+				}
+				# All, Edit or Review mode: show the new translation
+				$new_translation = "<div>" . lang("current_translation") . " : " . $users_translations_ref->{$lc}{$tagid}{to} . " (" . $users_translations_ref->{$lc}{$tagid}{userid} . ")</div>";
+			}			
+			else {
+				$to_be_translated++;
+				
+				$log->debug("display_list_of_tags_translate - entry $tagid does not have user translation to $lc") if $log->is_debug();
+				
+				if ($request_ref->{translate} eq "review") {
+					# Review mode: show only entries with new translations
+					$log->debug("display_list_of_tags_translate - translate=" . $request_ref->{translate} . " - skip $tagid entry without existing user translation") if $log->is_debug();				
+					next;
+				}
+			}
+			
+			$j++;
+			
+			$link = "/$path/" . $tag_ref->{tagurl};
+
+			my $display = $tag_ref->{display};
+			my $display_lc = $tag_ref->{display_lc};
+			
+			my $synonyms = "";
+			my $lc_tagid = get_fileid($display);
+			
+			if ((defined $synonyms_for{$tagtype}{$display_lc}) and (defined $synonyms_for{$tagtype}{$display_lc}{$lc_tagid})) {
+				$synonyms = join(", ", @{$synonyms_for{$tagtype}{$display_lc}{$lc_tagid}});
+			}
+			
+			# Google Translate link
+			
+			# https://translate.google.com/#view=home&op=translate&sl=en&tl=de&text=
+			my $escaped_synonyms = $synonyms;
+			$escaped_synonyms =~ s/ /\%20/g;
+			
+			my $google_translate_link = "https://translate.google.com/#view=home&op=translate&sl=en&tl=$lc&text=$escaped_synonyms";
+
+			$html .= <<HTML
+<tr><td>			
+<a href="$link"$nofollow target="_blank">$display</a> $synonyms<br />
+<input type="hidden" id="from_$j" name="from_$j" value="$tagid" />
+<div id="to_${j}_div"><input id="to_$j" name="to_$j" value="" /></div>
+$new_translation
+<span style="font-size: 80%;">&rarr; <a href="$google_translate_link" target="_blank">Google Translate</a></span>
+</td>
+<td>
+<div id="save_${j}_div"><button id="save_$j" class="tiny button save" type="button">$Lang{save}{$lang}</button></div>
+</td>
+<td style="text-align:right">$products</td></tr>
+HTML
+;
+
+
+		}
+
+		$html .= "</tbody></table></div>";
+		
+		
+		my $counts = ($#tags + 1) . " ". $Lang{$tagtype . "_p"}{$lang}
+		. " (" . lang("translated") . " : $translated, " . lang("to_be_translated") . " : $to_be_translated)";
+		
+		$html =~ s/<COUNTS>/$counts/;
+		
+		
+		
+		$html .= <<HTML
+<input type="hidden" id="tagtype" name="tagtype" value="$tagtype" />		
+HTML
+;
+
+		$log->debug("going through all tags - done", {}) if $log->is_debug();
+		
+		my $tagtype_p = $Lang{$tagtype . "_p"}{$lang};
+
+		$initjs .= <<JS
+oTable = \$('#tagstable').DataTable({
+	language: {
+		search: "$Lang{tagstable_search}{$lang}",
+		info: "_TOTAL_ $tagtype_p",
+		infoFiltered: " - $Lang{tagstable_filtered}{$lang}"
+	},
+	paging: false,
+	order: [[ 1, "desc" ]],
+	columns: [
+		null,
+		{ "searchable": false },
+		{ "searchable": false }
+	]
+});
+
+			
+var buttonId;
+
+\$("button.save").click(function(){
+
+	event.stopPropagation();
+	event.preventDefault();
+	buttonId = this.id;
+	console.log("buttonId " + buttonId);
+  
+	buttonIdArray = buttonId.split("_");
+	console.log("Splitted in " + buttonIdArray[0] + " " + buttonIdArray[1])
+  
+	var tagtype = \$("#tagtype").val()
+	var fromId = "from_" + buttonIdArray[1];
+	var from = \$("#"+fromId).val();
+	var toId = "to_" + buttonIdArray[1];
+	var to = \$("#"+toId).val();
+	var saveId = "save_" + buttonIdArray[1];
+	console.log("tagtype = " + tagtype);
+	console.log("from = " + from);
+	console.log("to = " + to);
+	
+	\$("#"+saveId).hide();
+	
+var jqxhr = \$.post( "/cgi/translate_taxonomy.pl", { tagtype: tagtype, from: from, to: to },
+	function(data) {
+  \$("#"+toId+"_div").html(to);
+  \$("#"+saveId+"_div").html("Saved");
+  
+})
+  .fail(function() {
+    \$("#"+saveId).show();
+  });	
+  
+});			
+			
+JS
+;
+
+	$scripts .= <<SCRIPTS
+<script src="@{[ format_subdomain('static') ]}/js/datatables.min.js"></script>
+SCRIPTS
+;
+
+	$header .= <<HEADER
+<link rel="stylesheet" href="@{[ format_subdomain('static') ]}/js/datatables.min.css">
+HEADER
+;
+
+
+	}
+
+	# datatables clears both
+	$request_ref->{full_width} = 1;
 	
 	$log->debug("end", {}) if $log->is_debug();
 
 
 	return $html;
 }
+
+
+
+
 
 
 
@@ -3067,7 +3407,12 @@ HTML
 
 
 	if (defined $request_ref->{groupby_tagtype}) {
-		${$request_ref->{content_ref}} .= $html . display_list_of_tags($request_ref, $query_ref);
+		if (defined $request_ref->{translate}) {
+			${$request_ref->{content_ref}} .= $html . display_list_of_tags_translate($request_ref, $query_ref);
+		}
+		else {
+			${$request_ref->{content_ref}} .= $html . display_list_of_tags($request_ref, $query_ref);
+		}
 		if ($products_title ne '') {
 			$request_ref->{title} .= " " . lang("for") . " " . lcfirst($products_title);
 		}
@@ -3633,33 +3978,45 @@ sub search_and_export_products($$$$$) {
 		$html .= "<p>" . lang("no_products") . "</p>";
 	}
 
+	# On demand exports can be very big, limit the number of products
+	my $export_limit = 100000;
+
+	if (defined $options{export_limit}) {
+		$export_limit = $options{export_limit};
+	}
+
+	if ($count > $export_limit) {
+		$html .= "<p>" . sprintf(lang("error_too_many_products_to_export"), $count, $export_limit) . "</p>";
+	}
+
 	if (defined $request_ref->{current_link_query}) {
 		$request_ref->{current_link_query_display} = $request_ref->{current_link_query};
 		$request_ref->{current_link_query_display} =~ s/\?action=process/\?action=display/;
 		$html .= "&rarr; <a href=\"$request_ref->{current_link_query_display}&action=display\">" . lang("search_edit") . "</a><br>";
 	}
 
-	if ($count <= 0) {
+	if (($count <= 0) or ($count > $export_limit)) {
 		# $request_ref->{content_html} = $html;
 		$request_ref->{title} = lang("search_results");
+		$request_ref->{content_ref} = \$html;
 		display_new($request_ref);
 		return;
 	}
 
 
-	
+
 
 	if ($count > 0) {
-	
+
 		# Send the CSV file line by line
-		
+
 		use Apache2::RequestRec ();
 		my $r = Apache2::RequestUtil->request();
 		$r->headers_out->set("Content-type" => "text/csv; charset=UTF-8");
 		$r->headers_out->set("Content-disposition" => "attachment;filename=openfoodfacts_search.csv");
 		binmode(STDOUT, ":encoding(UTF-8)");
-		print "Content-Type: text/csv; charset=UTF-8\r\n\r\n";	
-	
+		print "Content-Type: text/csv; charset=UTF-8\r\n\r\n";
+
 		my $categories_nutriments_ref = retrieve("$data_root/index/categories_nutriments_per_country.$cc.sto");
 
 		# First pass needed if we flatten results
@@ -3694,7 +4051,7 @@ sub search_and_export_products($$$$$) {
 		my %tags_fields = (packaging => 1, brands => 1, categories => 1, labels => 1, origins => 1, manufacturing_places => 1, emb_codes=>1, cities=>1, allergens => 1, traces => 1, additives => 1, ingredients_from_palm_oil => 1, ingredients_that_may_be_from_palm_oil => 1);
 
 		my $csv = "";
-		
+
 		foreach my $field (@export_fields) {
 
 			# skip additives field and put only additives_tags
@@ -3747,13 +4104,13 @@ sub search_and_export_products($$$$$) {
 		$csv =~ s/\t$/\n/;
 
 		print $csv;
-		
-		
-		
+
+
+
 		while (my $product_ref = $cursor->next) {
 
 			$csv = "";
-		
+
 			# Normal fields
 
 			foreach my $field (@export_fields) {
@@ -3882,7 +4239,7 @@ sub search_and_export_products($$$$$) {
 			}
 
 			$csv =~ s/\t$/\n/;
-			
+
 			print $csv;
 
 		}
@@ -6127,8 +6484,9 @@ sub display_product($)
 	my $title = undef;
 	my $description = "";
 
-	$scripts .= <<HTML
-HTML
+		$scripts .= <<SCRIPTS
+<script src="@{[ format_subdomain('static') ]}/js/display-product.js"></script>
+SCRIPTS
 ;
 	$initjs .= <<JS
 JS
@@ -6276,6 +6634,10 @@ HTML
 #   based on <span itemprop="reviewCount">11</span> customer reviews
 #  </div>
 
+	if ((defined $User_id) and (defined $robotoff_url) and (length($robotoff_url) > 0)) {
+		$html .= "<robotoff-asker url='$robotoff_url' code='$code' lang='$lc' style='display: none;' caption-yes='" . lang("button_caption_yes") . "' caption-no='" . lang("button_caption_no") . "' caption-skip='" . lang("button_caption_skip") . "'></robotoff-asker>\n";
+	}
+
 	$html .= '<div itemscope itemtype="https://schema.org/Product">' . "\n";
 
 	$html .= "<h1 property=\"food:name\" itemprop=\"name\">$title</h1>";
@@ -6315,6 +6677,16 @@ HTML
 
 	}
 
+	# GS1-Prefixes for restricted circulation numbers within a company - warn for possible conflicts
+	if ($code =~ /^(?:(?:0{7}[0-9]{5,6})|(?:04[0-9]{10,11})|(?:[02][0-9]{2}[0-9]{5}))$/) {
+		$html .= <<HTML
+<div data-alert class="alert-box info" id="warning_gs1_company_prefix" style="display: block;">
+$Lang{warning_gs1_company_prefix}{$lc}
+<a href="#" class="close">&times;</a>
+</span></div>
+HTML
+;
+	}
 
 	if (not has_tag($product_ref, "states", "en:complete")) {
 
@@ -6421,6 +6793,9 @@ HTML
 			if ((defined $source_ref->{manufacturer}) and ($source_ref->{manufacturer} == 1)) {
 				$html_manufacturer_source = "<p>" . sprintf(lang("sources_manufacturer"), "<a href=\"" . $source_ref->{url} . "\">" . $source_ref->{name} . "</a>") . "</p>";
 			}
+			elsif ((defined $source_ref->{collaboration}) and ($source_ref->{collaboration} == 1)) {
+				$html_manufacturer_source = "<p>" . sprintf(lang("sources_collaboration"), "<a href=\"" . $source_ref->{url} . "\">" . $source_ref->{name} . "</a>") . "</p>";
+			}			
 		}
 	}
 
@@ -6883,9 +7258,9 @@ $html_fields
 HTML
 ;
 	}
-	
+
 	if ($admin) {
-		compute_carbon_footprint_infocard($product_ref);	
+		compute_carbon_footprint_infocard($product_ref);
 		$html .= display_field($product_ref, 'environment_infocard');
 		if (defined $product_ref->{"carbon_footprint_from_meat_or_fish_debug"}) {
 			$html .= "<p>debug: " . $product_ref->{"carbon_footprint_from_meat_or_fish_debug"} . "</p>";
@@ -7475,30 +7850,35 @@ sub display_nutrient_levels($) {
 	my $html_nutrition_grade = '';
 	my $html_nutrient_levels = '';
 
-	if ((exists $product_ref->{"nutrition_grade_fr"})) {
+	if ((exists $product_ref->{"nutrition_grade_fr"})
+		and ($product_ref->{"nutrition_grade_fr"} =~ /^[abcde]$/)) {
 		my $grade = $product_ref->{"nutrition_grade_fr"};
 		my $uc_grade = uc($grade);
 
 		my $warning = '';
-		if ((defined $product_ref->{nutrition_score_warning_no_fiber}) and ($product_ref->{nutrition_score_warning_no_fiber} == 1)) {
-			$warning .= "<p>" . lang("nutrition_grade_fr_fiber_warning") . "</p>";
-		}
-		if ((defined $product_ref->{nutrition_score_warning_no_fruits_vegetables_nuts})
-				and ($product_ref->{nutrition_score_warning_no_fruits_vegetables_nuts} == 1)) {
-			$warning .= "<p>" . lang("nutrition_grade_fr_no_fruits_vegetables_nuts_warning") . "</p>";
-		}
-		if ((defined $product_ref->{nutrition_score_warning_fruits_vegetables_nuts_estimate})
-				and ($product_ref->{nutrition_score_warning_fruits_vegetables_nuts_estimate} == 1)) {
-			$warning .= "<p>" . sprintf(lang("nutrition_grade_fr_fruits_vegetables_nuts_estimate_warning"),
-								$product_ref->{nutriments}{"fruits-vegetables-nuts-estimate_100g"}) . "</p>";
-		}
-		if ((defined $product_ref->{nutrition_score_warning_fruits_vegetables_nuts_from_category})
-				and ($product_ref->{nutrition_score_warning_fruits_vegetables_nuts_from_category} ne '')) {
-			$warning .= "<p>" . sprintf(lang("nutrition_grade_fr_fruits_vegetables_nuts_from_category_warning"),
-								display_taxonomy_tag($lc,'categories',$product_ref->{nutrition_score_warning_fruits_vegetables_nuts_from_category}),
-								$product_ref->{nutrition_score_warning_fruits_vegetables_nuts_from_category_value}) . "</p>";
-		}
 
+		# Do not display a warning for water
+		if (not (has_tag($product_ref, "categories", "en:spring-waters"))) {
+
+			if ((defined $product_ref->{nutrition_score_warning_no_fiber}) and ($product_ref->{nutrition_score_warning_no_fiber} == 1)) {
+				$warning .= "<p>" . lang("nutrition_grade_fr_fiber_warning") . "</p>";
+			}
+			if ((defined $product_ref->{nutrition_score_warning_no_fruits_vegetables_nuts})
+					and ($product_ref->{nutrition_score_warning_no_fruits_vegetables_nuts} == 1)) {
+				$warning .= "<p>" . lang("nutrition_grade_fr_no_fruits_vegetables_nuts_warning") . "</p>";
+			}
+			if ((defined $product_ref->{nutrition_score_warning_fruits_vegetables_nuts_estimate})
+					and ($product_ref->{nutrition_score_warning_fruits_vegetables_nuts_estimate} == 1)) {
+				$warning .= "<p>" . sprintf(lang("nutrition_grade_fr_fruits_vegetables_nuts_estimate_warning"),
+									$product_ref->{nutriments}{"fruits-vegetables-nuts-estimate_100g"}) . "</p>";
+			}
+			if ((defined $product_ref->{nutrition_score_warning_fruits_vegetables_nuts_from_category})
+					and ($product_ref->{nutrition_score_warning_fruits_vegetables_nuts_from_category} ne '')) {
+				$warning .= "<p>" . sprintf(lang("nutrition_grade_fr_fruits_vegetables_nuts_from_category_warning"),
+									display_taxonomy_tag($lc,'categories',$product_ref->{nutrition_score_warning_fruits_vegetables_nuts_from_category}),
+									$product_ref->{nutrition_score_warning_fruits_vegetables_nuts_from_category_value}) . "</p>";
+			}
+		}
 
 		$html_nutrition_grade .= <<HTML
 <h4>$Lang{nutrition_grade_fr_title}{$lc}
@@ -8377,17 +8757,34 @@ HTML
 		# If the request specified a value for the fields parameter, return only the fields listed
 		if (defined $request_ref->{fields}) {
 			my $compact_product_ref = {};
+			my $carbon_footprint_computed = 0;
 			foreach my $field (split(/,/, $request_ref->{fields})) {
-				if ($field =~ /^environment_infocard/) {
+				# On demand carbon footprint tags
+				if ((not $carbon_footprint_computed)
+					and ($field =~ /^environment_infocard/) or ($field =~ /^environment_impact_level/)) {
 					compute_carbon_footprint_infocard($product_ref);
-				}			
-				if (defined $product_ref->{$field}) {
+					$carbon_footprint_computed = 1;
+				}
+				# Allow apps to request a HTML nutrition table by passing &fields=nutrition_table_html
+				if ($field eq "nutrition_table_html") {
+					$compact_product_ref->{$field} = display_nutrition_table($product_ref, undef);
+				}
+				# fields in %language_fields can have different values by language
+				if (defined $language_fields{$field}) {
+					foreach my $preferred_lc (@lcs) {
+						if ((defined $product_ref->{$field . "_" . $preferred_lc}) and ($product_ref->{$field . "_" . $preferred_lc} ne '')) {
+							$compact_product_ref->{$field} = $product_ref->{$field . "_" . $preferred_lc};
+							last;
+						}
+					}
+				}
+
+				if ((not defined $compact_product_ref->{$field}) and (defined $product_ref->{$field})) {
 					$compact_product_ref->{$field} = $product_ref->{$field};
 				}
 			}
 			$response{product} = $compact_product_ref;
 		}
-
 
 		if ($request_ref->{jqm}) {
 			# return a jquerymobile page for the product

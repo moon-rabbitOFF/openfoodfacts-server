@@ -57,8 +57,8 @@ Usage:
 import_csv_file.pl --csv_file path_to_csv_file --images_dir path_to_directory_containing_images --user_id user_id --comment "Systeme U import"
  --define lc=fr --define stores="Magasins U"
 
---source-licence "Creative Commons CC-BY-SA 4.0"
---source-licence-url
+--source_licence "Creative Commons CC-BY-SA 4.0"
+--source_licence-url
 --manufacturer : indicates the data comes from the manufacturer (and not another 3rd party open data source)
 --test	: do not import product data or images, but compute statistics.
 --define	: allows to define field values that will be applied to all products.
@@ -67,6 +67,7 @@ import_csv_file.pl --csv_file path_to_csv_file --images_dir path_to_directory_co
 --only_import_products_with_images
 --skip_products_without_info
 --skip_existing_values
+--only_select_not_existing_images
 TXT
 ;
 
@@ -92,6 +93,7 @@ my $pretend = 0;
 my $skip_if_not_code;
 my $skip_products_without_info = 0;
 my $skip_existing_values = 0;
+my $only_select_not_existing_images = 0;
 
 
 GetOptions (
@@ -114,6 +116,7 @@ GetOptions (
 	"code=s" => \$skip_if_not_code,
 	"skip_products_without_info" => \$skip_products_without_info,
 	"skip_existing_values" => \$skip_existing_values,
+	"only_select_not_existing_images" => \$only_select_not_existing_images,
 		)
   or die("Error in command line arguments:\n$\nusage");
 
@@ -186,9 +189,11 @@ my %stats = (
 'products_with_images' => {},
 'products_with_data' => {},
 'products_with_info' => {},
+'products_with_ingredients' => {},
 'products_with_nutrition' => {},
 'products_without_images' => {},
 'products_without_data' => {},
+'products_without_info' => {},
 'products_without_info' => {},
 'products_without_nutrition' => {},
 'products_updated' => {},
@@ -289,8 +294,14 @@ if ((defined $images_dir) and ($images_dir ne '')) {
 			}
 
 			if ($file2 =~ /(\d+)(_|-|\.)?([^\.-]*)?((-|\.)(.*))?\.(jpg|jpeg|png)/i) {
+			
+				if ((-s "$images_dir/$file") < 10000) {
+					print "Size of $images_dir/$file is < 10000 : " . (-s "$images_dir/$file") . " , skipping\n";
+					next;
+				}
 
 				my $code = $1;
+				$code = normalize_code($code);
 				my $imagefield = $3;	# front / ingredients / nutrition , optionnaly with _[language code] suffix
 
 				if ((not defined $imagefield) or ($imagefield eq '')) {
@@ -329,7 +340,9 @@ my $skip_not_existing = 0;
 my $skip_no_images = 0;
 
 #my $skip_until = 8018759001393;
-my $skip_until;
+#my $skip_until = 0;
+
+my $skip_until = 0;
 
 while (my $imported_product_ref = $csv->getline_hr ($io)) {
 
@@ -343,6 +356,7 @@ while (my $imported_product_ref = $csv->getline_hr ($io)) {
 	my @images_ids;
 
 	my $code = remove_tags_and_quote($imported_product_ref->{code});
+	$code = normalize_code($code);
 
 	if ((defined $skip_if_not_code) and ($code ne $skip_if_not_code)) {
 		next;
@@ -373,6 +387,8 @@ while (my $imported_product_ref = $csv->getline_hr ($io)) {
 		next;
 	}
 
+	#next if ($code !~ /^80/);
+
 	$stats{products_in_file}{$code} = 1;
 
 	# apply global field values
@@ -389,8 +405,41 @@ while (my $imported_product_ref = $csv->getline_hr ($io)) {
 		die;
 	}
 
-
-
+	# image paths can be passed in fields image_front / nutrition / ingredients / other
+	# several values can be passed in others
+	
+	foreach my $imagefield ("front", "ingredients", "nutrition", "other") {
+		my $k = 0;
+		if (defined $imported_product_ref->{"image_" . $imagefield}) {
+			foreach my $file (split(/,/, $imported_product_ref->{"image_" . $imagefield})) {
+				$file =~ s/^\s+//;
+				$file =~ s/\s+$//;
+				
+				defined $images_ref->{$code} or $images_ref->{$code} = {};
+				if ($imagefield ne "other") {
+					$images_ref->{$code}{$imagefield} = $file;
+				}
+				else {
+					$k++;
+					$images_ref->{$code}{$imagefield . "_$k"} = $file;
+					
+					# No front image?
+					if (not (defined $images_ref->{$code}{front})) {
+						$images_ref->{$code}{front} = $file;
+					}
+					
+					if (	((defined $images_ref->{$code}{front}) and ($images_ref->{$code}{front} eq $images_ref->{$code}{$imagefield . "_$k"}))
+						or	((defined $images_ref->{$code}{ingredients}) and ($images_ref->{$code}{ingredients} eq $images_ref->{$code}{$imagefield . "_$k"}))
+						or	((defined $images_ref->{$code}{nutrition}) and ($images_ref->{$code}{nutrition} eq $images_ref->{$code}{$imagefield . "_$k"})) ) {
+						# File already selected
+						delete $images_ref->{$code}{$imagefield . "_$k"};
+					}
+					
+				}
+			}
+		}
+	}
+	
 
 	# next if ($i < 2665);
 
@@ -510,15 +559,28 @@ while (my $imported_product_ref = $csv->getline_hr ($io)) {
 
 
 	foreach my $field (@param_fields) {
+	
+		# fields suffixed with _if_not_existing are loaded only if the product does not have an existing value
+		
+		if (not ((defined $product_ref->{$field}) and ($product_ref->{$field} !~ /^\s*$/))
+			and ((defined $imported_product_ref->{$field . "_if_not_existing"}) and ($imported_product_ref->{$field . "_if_not_existing"} !~ /^\s*$/))) {
+			print STDERR "no existing value for $field, using value from ${field}_if_not_existing: " . $imported_product_ref->{$field . "_if_not_existing"} . "\n";
+			$imported_product_ref->{$field} = $imported_product_ref->{$field . "_if_not_existing"};
+		}
+		
 
 		if ((defined $imported_product_ref->{$field}) and ($imported_product_ref->{$field} !~ /^\s*$/)) {
 
 
-			print "defined and non empty value for field $field : " . $imported_product_ref->{$field} . "\n";
+			print STDERR "defined and non empty value for field $field : " . $imported_product_ref->{$field} . "\n";
 
 			if (($field =~ /product_name/) or ($field eq "brands")) {
 				$stats{products_with_info}{$code} = 1;
 			}
+			
+			if ($field =~ /^ingredients/) {
+				$stats{products_with_ingredients}{$code} = 1;
+			}			
 
 			# for tag fields, only add entries to it, do not remove other entries
 
@@ -564,6 +626,7 @@ while (my $imported_product_ref = $csv->getline_hr ($io)) {
 					if (not exists $existing{$tagid}) {
 						print "- adding $tagid to $field\n";
 						$product_ref->{$field} .= ", $tag";
+						$existing{$tagid} = 1;
 					}
 					else {
 						#print "- $tagid already in $field\n";
@@ -796,6 +859,17 @@ while (my $imported_product_ref = $csv->getline_hr ($io)) {
 		}
 
 	}
+	
+	# Set nutrition_data_per to 100g if it was not provided and we have nutrition data in the csv file
+	if (defined $stats{products_with_nutrition}{$code}) {
+		if (not defined $imported_product_ref->{nutrition_data_per}) {
+			if ((not defined $product_ref->{nutrition_data_per}) or ($product_ref->{nutrition_data_per} ne "100g")) {
+				$product_ref->{nutrition_data_per} = "100g";
+				$stats{products_nutrition_data_per_updated}{$code} = 1;
+				$modified++;
+			}
+		}
+	}
 
 
 	if ((defined $stats{products_info_added}{$code}) or (defined $stats{products_info_changed}{$code})) {
@@ -812,7 +886,7 @@ while (my $imported_product_ref = $csv->getline_hr ($io)) {
 		$stats{products_nutrition_not_updated}{$code} = 1;
 	}
 
-	if ((defined $stats{products_info_updated}{$code}) or (defined $stats{products_nutrition_updated}{$code})) {
+	if ((defined $stats{products_info_updated}{$code}) or (defined $stats{products_nutrition_updated}{$code}) or (defined $stats{products_nutrition_data_per_updated}{$code})) {
 		$stats{products_data_updated}{$code} = 1;
 	}
 	else {
@@ -822,6 +896,9 @@ while (my $imported_product_ref = $csv->getline_hr ($io)) {
 	if (not defined $stats{products_with_info}{$code}) {
 		$stats{products_without_info}{$code} = 1;
 	}
+	if (not defined $stats{products_with_ingredients}{$code}) {
+		$stats{products_without_ingredients}{$code} = 1;
+	}	
 	if (not defined $stats{products_with_nutrition}{$code}) {
 		$stats{products_without_nutrition}{$code} = 1;
 	}
@@ -1035,7 +1112,9 @@ while (my $imported_product_ref = $csv->getline_hr ($io)) {
 					}
 
 					# select the photo
-					if ($imagefield_with_lc =~ /front|ingredients|nutrition/) {
+					if (($imagefield_with_lc =~ /front|ingredients|nutrition/) and
+						((not $only_select_not_existing_images)
+							or ((not defined $product_ref->{images}) or (not defined $product_ref->{images}{$imagefield_with_lc})) )){
 
 						if (($imgid > 0) and ($imgid > $current_max_imgid)) {
 
@@ -1075,8 +1154,9 @@ while (my $imported_product_ref = $csv->getline_hr ($io)) {
 
 
 	if ($modified) {
-		$j++ > 10 and last;
+		# $j++ > 10 and last;
 	}
+	#last if ($code eq "8024749600415");
 }
 
 

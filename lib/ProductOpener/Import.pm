@@ -26,6 +26,8 @@ use Exporter    qw< import >;
 
 use Log::Any qw($log);
 
+use Storable qw(dclone);
+use Text::Fuzzy;
 
 BEGIN
 {
@@ -38,6 +40,7 @@ BEGIN
 		%products
 	
 		&assign_value
+		&remove_value
 		
 		&get_list_of_files
 		
@@ -51,6 +54,8 @@ BEGIN
 		&match_taxonomy_tags
 		&assign_countries_for_product
 		&assign_main_language_of_product
+		
+		&assign_quantity_from_field
 		
 		&clean_fields
 		&clean_weights
@@ -70,6 +75,8 @@ use vars @EXPORT_OK ;
 use ProductOpener::Config qw/:all/;
 use ProductOpener::Store qw/:all/;
 use ProductOpener::Tags qw/:all/;
+use ProductOpener::Products qw/:all/;
+use ProductOpener::Ingredients qw/:all/;
 
 use CGI qw/:cgi :form escapeHTML/;
 use URI::Escape::XS;
@@ -78,7 +85,6 @@ use Encode;
 use JSON::PP;
 use Time::Local;
 use Data::Dumper;
-
 use Text::CSV;
 
 %fields = ();
@@ -119,6 +125,12 @@ sub assign_value($$$) {
 	
 	my $field = $target;
 	
+	# empty value? skip
+	
+	if ((not defined $value) or ($value =~ /^(\s|\.|\\|\/)*$/)) {
+		return;
+	}
+	
 	# !categories : only add the value if it exists in the corresponding tags taxonomy
 	if ($target =~ /^!/) {
 		$field = $';
@@ -131,13 +143,21 @@ sub assign_value($$$) {
 	if (not exists $fields{$field}) {
 		$fields{$field} = 1;
 		push @fields, $field;
-	}	
+	}
+	
+	if (($field =~ /_value$/) and (defined $value)) {
+		# nutrients: remove useless 0
+		# 2482.0000   39.8000
+		$value =~ s/(\.|\,)(0+)$//;
+		$value =~ s/(\.|\,)(\d*[1-9])0+$/$1$2/;		
+	}
 	
 	if ((defined $product_ref->{$field}) and ($product_ref->{$field} ne "") and ($mode eq "append")
 		and ($product_ref->{$field} ne $value)) {
 		
 		if (exists $tags_fields{$field}) {
 			if ($target =~ /^!/) {
+				# only add the field if it exists in the taxonomy
 				my $canon_tagid = canonicalize_taxonomy_tag($product_ref->{lc}, $field, $value);
 				if (exists_taxonomy_tag($field, $canon_tagid)) {
 					$product_ref->{$field} .= ", " . $value;
@@ -154,6 +174,20 @@ sub assign_value($$$) {
 	}
 	else {
 		$product_ref->{$field} = $value;
+	}
+}
+
+
+sub remove_value($$$) {
+
+	my $product_ref = shift;
+	my $target = shift;
+	my $value = shift;
+	
+	my $field = $target;
+	
+	if (defined $product_ref->{$field}) {
+		$field =~ s/(, )?$value//ig;
 	}
 }
 
@@ -270,7 +304,8 @@ sub match_taxonomy_tags($$$$) {
 			}
 			# try to see if we have a packager code
 			# e.g. from Carrefour: Fabriqué en France par EMB 29181 (F) ou EMB 86092A (G) pour Interdis.
-			elsif ($value =~ /^((e|emb)(\s|-|\.)*(\d{5})(\s|-|\.)*(\w)?)$/i) {
+			elsif (($value =~ /^((e|emb)(\s|-|\.)*(\d{5})(\s|-|\.)*(\w)?)$/i)
+				or ($value =~ /([a-z][a-z])(\s|\.|-)+\d\d(\s|\.|-)+\d\d\d(\s|\.|-)+\d\d\d(\s|\.|-)+(ce|ec|eg)/i)) {
 				assign_value($product_ref,"emb_codes", $value);
 				$log->info("match_taxonomy_tags: found packaging code - assigning value", { source => $source, value => $value, target => "emb_codes"}) if $log->is_info();		
 			}
@@ -293,6 +328,32 @@ sub split_allergens($) {
 }
 
 
+sub assign_quantity_from_field($$) {
+
+	my $product_ref = shift;
+	my $field = shift;
+	
+	if ((defined $product_ref->{$field}) and ((not defined $product_ref->{quantity}) or ($product_ref->{quantity} eq ""))) {
+	
+		if ($product_ref->{$field} =~ /\b\(?((\d+)\s?x\s?)?(\d+\.?\d*)\s?(g|gr|kg|kgr)\s?(x\s?(\d+))?\)?\s*$/i) {
+			$product_ref->{$field} = $`;
+
+			if (defined $2) {
+				assign_value($product_ref, "quantity", $2 . " X " . $3 . " " . $4);
+			}
+			elsif (defined $6) {
+				assign_value($product_ref, "quantity", $6 . " X " . $3 . " " . $4);
+			}
+			else {
+				assign_value($product_ref, "quantity", $3 . " " . $4);
+			}
+			
+			$product_ref->{$field} =~ s/\s+$//;
+		}
+		
+	}
+}
+
 
 sub clean_weights($) {
 
@@ -304,9 +365,15 @@ sub clean_weights($) {
 	
 		# normalize unit
 		if (defined $product_ref->{$field . "_unit"}) {
-			$product_ref->{$field . "_unit"} =~ s/gr/g/i;
-			if ($product_ref->{$field . "_unit"} !~ /^(kJ|L)$/) {
-				$product_ref->{$field . "_unit"} = lc($product_ref->{$field . "_unit"});
+		
+			if ($product_ref->{$field . "_unit"} =~ /^(-|n\/a|na|nr|ns|\.)*$/i) {
+				delete $product_ref->{$field . "_unit"};
+			}
+			else {
+				$product_ref->{$field . "_unit"} =~ s/gr/g/i;
+				if ($product_ref->{$field . "_unit"} !~ /^(kJ|L)$/) {
+					$product_ref->{$field . "_unit"} = lc($product_ref->{$field . "_unit"});
+				}
 			}
 		}
 	
@@ -406,6 +473,7 @@ drained_weight => '(peso )?(neto )?(escurrido)',
 	# empty or uncomplete quantity, but net_weight etc. present
 	if ((not defined $product_ref->{quantity}) or ($product_ref->{quantity} eq "") 
 		or (($lc eq "fr") and ($product_ref->{quantity} =~ /^\d+ tranche([[:alpha:]]*)$/)) # French : "6 tranches épaisses"
+		or ($product_ref->{quantity} =~ /^\(.+\)$/)	#  (4 x 125 g)
 		) {
 		
 		# See if we have other quantity related values: net_weight_value	net_weight_unit	drained_weight_value	drained_weight_unit	volume_value	volume_unit
@@ -422,7 +490,12 @@ drained_weight => '(peso )?(neto )?(escurrido)',
 		
 		if (defined $extra_quantity) {
 			if ((defined $product_ref->{quantity}) and ($product_ref->{quantity} ne "")) {
-				$product_ref->{quantity} .= " ($extra_quantity)";
+				if ($product_ref->{quantity} =~ /^\(.+\)$/)	{
+					$product_ref->{quantity} = $extra_quantity . " " . $product_ref->{quantity};
+				}
+				else {
+					$product_ref->{quantity} .= " ($extra_quantity)";
+				}
 			}
 			else {
 				assign_value($product_ref, 'quantity', $extra_quantity);
@@ -443,6 +516,8 @@ sub clean_fields($) {
 		
 			$product_ref->{$field} =~ s/(\&nbsp)|(\xA0)/ /g;
 			$product_ref->{$field} =~ s/’/'/g;
+			
+			$product_ref->{$field} =~ s/<p>|<\/p>/\n/ig;
 			
 			# Remove extra line feeds
 			$product_ref->{$field} =~ s/<br( )?(\/)?>/\n/ig;
@@ -548,6 +623,11 @@ sub clean_fields($) {
 				if (($field =~ /_fr/) or (($lc eq 'fr') and ($field !~ /_\w\w$/))) {
 					$product_ref->{$field} =~ s/_(d|l)('|’)([^_,-;]+)_/$1'_$2_/ig;
 				}
+			}
+			
+			if ($field =~ /^ingredients_text_(\w\w)/) {
+				my $ingredients_lc = $1;
+				$product_ref->{$field} = clean_ingredients_text_for_lang($product_ref->{$field}, $ingredients_lc);
 			}			
 			
 			if ($field =~ /^nutrition_grade_/) {
@@ -601,11 +681,8 @@ sub load_xml_file($$$$) {
 
 	}
 	
-	my $product_ref;
-	
-	
 	if (defined $code) {
-		$product_ref = get_or_create_product_for_code($code);
+		$code = normalize_code($code);
 	}
 	
 	$log->info("parsing xml file with XML::Rules", { file => $file, xml_rules => $xml_rules_ref }) if $log->is_info();
@@ -624,6 +701,114 @@ sub load_xml_file($$$$) {
 	
 	$log->trace("XML::Rules output", { file => $file, xml_ref => $xml_ref }) if $log->is_trace();
 	
+	if ($log->is_trace()) {
+		binmode STDOUT, ":encoding(UTF-8)";
+		open (my $OUT_JSON, ">", "$www_root/data/import_debug_xml.json");
+		print $OUT_JSON encode_json($xml_ref);
+		close ($OUT_JSON);
+	}
+	
+	# Some producers (e.g. Auchan) have multiple product codes in one file, with multiple label field values, 
+	# but without an actual id to make the mapping.
+	
+#<ProductFolder Name="Auchan Cremes Dessert Autres Parfums"/>
+#-<TradeItems>
+#<TradeItem Ean7="" Gtin="3596710402274" Brand="AUCHAN" Packing="" Format="" DenominationCommerciale="CREME DESSERT spÃ©culoos 4X125G"/>
+#<TradeItem Ean7="" Gtin="3596710402281" Brand="AUCHAN" Packing="" Format="" DenominationCommerciale="CREME DESSERT baba au rhum 4X125G"/>
+#<TradeItem Ean7="" Gtin="3596710406074" Brand="AUCHAN" Packing="" Format="" DenominationCommerciale="CREME DESSERT PISTACHE 4X125G"/>
+#<TradeItem Ean7="" Gtin="3596710402250" Brand="AUCHAN" Packing="" Format="" DenominationCommerciale="CREME DESSERT chocolat caramel 4X125G"/>
+#<TradeItem Ean7="" Gtin="3596710402267" Brand="AUCHAN" Packing="" Format="" DenominationCommerciale="CREME DESSERT chocolat blanc 4X125G"/>
+#<TradeItem Ean7="" Gtin="3596710016495" Brand="AUCHAN" Packing="" Format="" DenominationCommerciale="CREM DESS CAFE 4X125G"/>
+#</TradeItems>
+# ...
+#+<Etiquette localId="347348" name="Crème Dessert Café Auchan x4">
+#-<Etiquette localId="347381" name="Crème Dessert Chocolat Caramel Auchan x4">
+#<SectionEtiquetage>Crème Dessert Chocolat Caramel Auchan x4</SectionEtiquetage>
+#<ConditionnementConcerne>Chocolat Caramel x 4</ConditionnementConcerne>
+#<DenominationCommerciale>Crème dessert Caram'choc</DenominationCommerciale>
+#<DenominationLegale>Crème dessert aromatisée caramel chocolat</DenominationLegale>	
+	
+#			multiple_codes => { 
+#				codes => codes,	# all sub fields will be moved to the root of the split children
+#				fuzzy_match => "etiquettes",	# if exists, specify a field that depends on the child
+#				fuzzy_from => "DenominationCommerciale", # value from "codes" that will be fuzzy matched to find the id for "fuzzy_match" hash
+#			},	
+	
+	my @xml_refs = ();
+	
+	# Multiple products?
+	if ($xml_fields_mapping_ref->[0][0] eq "multiple_codes") {
+	
+		$log->info("Split multiple products", { file => $file }) if $log->is_info();
+	
+		my $codes = $xml_fields_mapping_ref->[0][1]{codes};
+		
+		# fuzzy match?
+		
+		my @fuzzy_match_keys = ();
+		my @fuzzy_match_keysid = ();
+		my $fuzzy_match;
+		
+		if (defined $xml_fields_mapping_ref->[0][1]{fuzzy_match}) {
+		
+			$fuzzy_match = $xml_fields_mapping_ref->[0][1]{fuzzy_match};
+			if (defined $xml_ref->{$fuzzy_match}) {
+				@fuzzy_match_keys = sort keys %{$xml_ref->{$fuzzy_match}};
+				@fuzzy_match_keysid = map { get_fileid($_)} @fuzzy_match_keys;
+			}
+		}
+	
+		if (defined $xml_ref->{$codes}) {
+			foreach my $new_code (sort keys %{$xml_ref->{$codes}}) {
+			
+				$new_code = normalize_code($new_code);
+				
+				$log->info("Split multiple products - code", { code => $new_code }) if $log->is_info();
+			
+				my $new_xml_ref = dclone($xml_ref);
+				
+				$new_xml_ref->{code} = $new_code;
+				foreach my $field (sort keys %{$xml_ref->{$codes}{$new_code}}) {
+					
+					$log->info("Split multiple products - copy field", { code => $new_code, field => $field }) if $log->is_info();
+				
+					$new_xml_ref->{$field} = $xml_ref->{$codes}{$new_code}{$field};
+				}
+				
+				# Fuzzy matching in other part of the XML file
+				if (defined $xml_fields_mapping_ref->[0][1]{fuzzy_from}) {
+				
+					my $fuzzy_from = $xml_fields_mapping_ref->[0][1]{fuzzy_from};
+				
+					$log->info("Fuzzy match", { fuzzy_from => $fuzzy_from }) if $log->is_info();
+									
+					if (defined $new_xml_ref->{$fuzzy_from}) {
+						my $tf = Text::Fuzzy->new (get_fileid($new_xml_ref->{$fuzzy_from}));
+						my $nearestid = $tf->nearest (\@fuzzy_match_keysid);
+						my $nearest = $fuzzy_match_keys[$nearestid];
+						$log->info("Fuzzy match found", { fuzzy_from => $fuzzy_from, value => $new_xml_ref->{$fuzzy_from}, nearest => $nearest }) if $log->is_info();
+												
+						foreach my $field (sort keys %{$xml_ref->{$fuzzy_match}{$nearest}}) {
+							
+							$log->info("Fuzzy match - copy field", { field => $field }) if $log->is_info();
+						
+							$new_xml_ref->{$field} = $xml_ref->{$fuzzy_match}{$nearest}{$field};
+						}						
+						
+					}
+				}
+	
+				push @xml_refs, $new_xml_ref;
+			}
+		}
+		
+		shift @{$xml_fields_mapping_ref};
+		
+	}
+	else {
+		push @xml_refs, $xml_ref;
+	}
+	
 	$log->info("Mapping XML fields", { file => $file }) if $log->is_info();
 	
 #		my @xml_fields_mapping = (
@@ -635,12 +820,22 @@ sub load_xml_file($$$$) {
 #			["fields.AL_INGREDIENT.*", "ingredients_text_*"],
 
 	# $code = undef;
+	
+	my $i = 1;
+	
+	foreach $xml_ref (@xml_refs) {
+	
+	my $product_ref;
+	
+	if (defined $code) {
+		$product_ref = get_or_create_product_for_code($code);
+	}
 
 	foreach my $field_mapping_ref (@$xml_fields_mapping_ref) {
 		my $source = $field_mapping_ref->[0];
 		my $target = $field_mapping_ref->[1];
 		
-		$log->trace("source", { source=>$source, target=>$target }) if $log->is_trace();
+		$log->trace("source $i", { source=>$source, target=>$target }) if $log->is_trace();
 		
 		my $current_tag = $xml_ref;
 		
@@ -674,6 +869,7 @@ sub load_xml_file($$$$) {
 						if ($tag_target eq 'code') {
 							$code = $current_tag->{$tag};
 
+							$code = normalize_code($code);
 							$product_ref = get_or_create_product_for_code($code);
 						}						
 						assign_value($product_ref, $tag_target, $current_tag->{$tag});
@@ -707,6 +903,8 @@ sub load_xml_file($$$$) {
 					print STDERR "$source_tag is a scalar: $value, assign value to $target\n";
 					if ($target eq 'code') {
 						$code = $value;
+						$code = normalize_code($code);
+						$product_ref = get_or_create_product_for_code($code);
 					}
 					
 					my $seen_energy_kj = 0;
@@ -749,7 +947,11 @@ sub load_xml_file($$$$) {
 				last;
 			}		
 		}
+		
+		$i++;
 	}
+	
+	} #foreach @xml_refs
 	
 	return 0;
 }
@@ -763,6 +965,7 @@ sub load_csv_file($) {
 	my $encoding = $options_ref->{encoding};
 	my $separator = $options_ref->{separator};
 	my $skip_lines = $options_ref->{skip_lines};
+	my $skip_lines_after_header = $options_ref->{skip_lines_after_header};
 	my $skip_non_existing_products = $options_ref->{skip_non_existing_products};
 	my $skip_empty_codes = $options_ref->{skip_empty_codes};
 	my @csv_fields_mapping = @{$options_ref->{csv_fields_mapping}};
@@ -787,6 +990,13 @@ sub load_csv_file($) {
 	my $headers_ref = $csv->getline ($io);
 	$i++;
 	
+	if (defined $skip_lines_after_header) {
+		for (my $j = 0; $j < $skip_lines_after_header; $j++) {
+			$csv->getline ($io);
+			$i++;
+		}
+	}	
+	
 	$log->info("CSV headers", { file => $file, headers_ref=>$headers_ref }) if $log->is_info();
 	
 	$csv->column_names($headers_ref);
@@ -807,66 +1017,111 @@ sub load_csv_file($) {
 			my $target_field = $field_mapping_ref->[1];
 						
 			$log->info("Field mapping", { source_field => $source_field, source_field_value => $csv_product_ref->{$source_field}, target_field=>$target_field }) if $log->is_info();
+			
+			# There can be other conditions:
+			# ["quantity", "nutriments.energy_kJ", ["Nutriment", "Energie"], ["Taille de la portion", "100.0000"], ["Unité", "Kilojoules (kj)"] ],
+
+			my $match = 1;
+			my $condition = 2;
+			
+			while (($match) and (defined $field_mapping_ref->[$condition])) {
+			
+				my $source_condition_field = $field_mapping_ref->[$condition][0];
+				my $source_condition_value = $field_mapping_ref->[$condition][1];
+			
+				if ((not defined $csv_product_ref->{$source_condition_field})
+					or ($csv_product_ref->{$source_condition_field} ne $source_condition_value)) {
+					$match = 0;
+				}
+			
+				$condition++;
+			}
 		
 			if (defined $csv_product_ref->{$source_field}) {
-				# print STDERR "defined source field $source_field: " . $csv_product_ref->{$source_field} . "\n";
-				
-				my $value = $csv_product_ref->{$source_field};
-				
-				if ($target_field eq 'code') {
-					$code = $value;
-					print STDERR "reading product code $code\n";
+			
+				if ($match) {
+					# print STDERR "defined source field $source_field: " . $csv_product_ref->{$source_field} . "\n";
+							
+					my $value = $csv_product_ref->{$source_field};
 					
-					if ((defined $options_ref->{skip_invalid_codes}) and ($code !~ /^\d+$/)) {
-						print STDERR "skipping invalid code\n";					
-						last;
-					}
-					elsif ((defined $skip_non_existing_products) and ($skip_non_existing_products) and (not exists $products{$code})) {
-						print STDERR "skipping non existing product\n";
-						last;
-					}
-					elsif ((defined $skip_empty_codes) and ((not defined $code) or ($code eq ""))) {
-						print STDERR "skipping empty code\n";					
-						last;
-					}
-					else {
-						$product_ref = get_or_create_product_for_code($code);
-					}
-				}
-				
-				# ["Energie kJ", "nutriments.energy_kJ"],
-				
-				elsif ($target_field =~ /^nutriments.(.*)/) {
-					$target_field = $1;
-					
-					# skip energy in kcal if we already have energy in kJ
-					if (($seen_energy_kj) and ($target_field =~ /kcal/i)) {
-						next;
+					if ($target_field eq 'code') {
+						$code = $value;
+						$code = normalize_code($code);
+						print STDERR "reading product code $code\n";
+						
+						if ((defined $options_ref->{skip_invalid_codes}) and ($code !~ /^\d+$/)) {
+							print STDERR "skipping invalid code\n";					
+							last;
+						}
+						elsif ((defined $skip_non_existing_products) and ($skip_non_existing_products) and (not exists $products{$code})) {
+							print STDERR "skipping non existing product\n";
+							last;
+						}
+						elsif ((defined $skip_empty_codes) and ((not defined $code) or ($code eq ""))) {
+							print STDERR "skipping empty code\n";					
+							last;
+						}
+						else {
+							$product_ref = get_or_create_product_for_code($code);
+						}
 					}
 					
-					if ($target_field =~ /kj/i) {
-						$seen_energy_kj = 1;
-					}
-					
-					if ($target_field =~ /^(.*)_([^_]+)$/) {
-							$target_field = $1;
-							my $unit = $2;
-							assign_value($product_ref, $target_field . "_value", $value);
-							if ($value ne "") {
-								assign_value($product_ref, $target_field . "_unit", $unit);
-							}
-							else {
-								assign_value($product_ref, $target_field . "_unit", "");
-							}
-					}
-					else {
-						assign_value($product_ref, $target_field . "_value", $value);					
-					}
-				}
-				else {
-					assign_value($product_ref, $target_field, $value);									
-				}
+					# ["URL", "download_to:/srv/off/imports/ferrero/images/"],
 
+					elsif ($target_field =~ /^download_to:/) {
+						
+						my $dir = $';
+						$dir =~ s/\/$//;
+						
+						my $file =  $csv_product_ref->{$source_field};
+						$file =~ s/.*\///;
+						
+						$file =~ s/[^A-Za-z0-9-_\.]/_/g;
+						
+						# do not download again images that we already have
+						# but try again if the size is 0
+						
+						if ((! -e "$dir/$file") or ((-s "$dir/$file") < 10000)) {
+						
+							print STDERR "downloading image: wget $csv_product_ref->{$source_field} -O $dir/$file\n";
+							system("wget $csv_product_ref->{$source_field} -O $dir/$file");
+							sleep 2;	# there seems to be some limit as we received 403 Forbidden responses
+						}
+					}
+					
+					# ["Energie kJ", "nutriments.energy_kJ"],
+					
+					elsif ($target_field =~ /^nutriments.(.*)/) {
+						$target_field = $1;
+						
+						# skip energy in kcal if we already have energy in kJ
+						if (($seen_energy_kj) and ($target_field =~ /kcal/i)) {
+							next;
+						}
+						
+						if ($target_field =~ /kj/i) {
+							$seen_energy_kj = 1;
+						}
+						
+						if ($target_field =~ /^(.*)_([^_]+)$/) {
+								$target_field = $1;
+								my $unit = $2;
+								assign_value($product_ref, $target_field . "_value", $value);
+								if ($value ne "") {
+									assign_value($product_ref, $target_field . "_unit", $unit);
+								}
+								else {
+									assign_value($product_ref, $target_field . "_unit", "");
+								}
+						}
+						else {
+							assign_value($product_ref, $target_field . "_value", $value);					
+						}
+					}
+					else {
+						assign_value($product_ref, $target_field, $value);									
+					}
+				}
 			}
 			else {
 				$log->error("undefined source field", { line => $i, source_field=>$source_field, csv_product_ref=>$csv_product_ref }) if $log->is_error();
@@ -934,7 +1189,7 @@ sub print_csv_file() {
 
 	print join("\t", @fields) . "\n";
 	
-	foreach my $code (sort {$products{$a} <=> $products{$b}} keys %products) {
+	foreach my $code (sort keys %products) {
 	
 		my @values = ();
 		my $product_ref = $products{$code};
@@ -951,6 +1206,7 @@ sub print_csv_file() {
 		$csv_out->print (*STDOUT, \@values) ;
 		print "\n";
 	
+		print STDERR "code: $code\n";
 	}
 
 }

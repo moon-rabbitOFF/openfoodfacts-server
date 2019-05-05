@@ -25,4 +25,23 @@ diag explain $product_ref;
 
 is($product_ref->{net_weight}, "480 g");
 
+assign_value($product_ref, "energy_value", "2428.000");
+
+is($product_ref->{energy_value}, "2428");
+
+assign_value($product_ref, "fat_value", "2428.0300");
+
+is($product_ref->{fat_value}, "2428.03");
+
+assign_value($product_ref, "sugars_value", "10.6000");
+
+is($product_ref->{sugars_value}, "10.6");
+
+$product_ref->{some_field} = "Fabriqué en France par EMB59481 pour Auchan Production";
+
+match_taxonomy_tags($product_ref, "some_field", "emb_codes",
+{ split => ',|( \/ )|\r|\n|\+|:|;|=|\(|\)|\b(et|par|pour|ou)\b', });
+
+is($product_ref->{emb_codes}, "EMB59481");
+
 done_testing();
