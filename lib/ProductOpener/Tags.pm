@@ -1,7 +1,7 @@
 # This file is part of Product Opener.
 #
 # Product Opener
-# Copyright (C) 2011-2018 Association Open Food Facts
+# Copyright (C) 2011-2019 Association Open Food Facts
 # Contact: contact@openfoodfacts.org
 # Address: 21 rue des Iles, 94100 Saint-Maur des Fossés, France
 #
@@ -228,7 +228,7 @@ sub has_tag($$$) {
 	return $return;
 }
 
-# Determine if a tag is a child of another tag (ot the same tag)
+# Determine if a tag is a child of another tag (or the same tag)
 # assume tags are already canonicalized
 sub is_a($$$) {
 
